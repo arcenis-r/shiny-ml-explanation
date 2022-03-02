@@ -70,7 +70,8 @@ state_region_xwalk <- census_mapping %>%
   select(-c(state_name, region)) %>%
   mutate(
     region_name = stringr::str_remove(region_name, "Region") %>% 
-      stringr::str_trim("both")
+      stringr::str_trim("both"),
+    state_abb = as_factor(state_abb)
   ) %>%
   arrange(region_name, state_abb)
 

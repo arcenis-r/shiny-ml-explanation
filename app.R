@@ -23,58 +23,101 @@
 rm(list = ls())
 
 # Load required packages
-library(shiny)
 library(tidyverse)
 library(tidymodels)
 library(lime)
+library(shiny)
 
 # Load / declare helper functions
+source("./scripts/shiny-ml-explanation-funs.R")
 
 
 ################################ Program start #################################
 
+data(lending_club)
+
+lc_data <- lending_club %>% 
+  left_join(
+    readr::read_rds("./data/state-region-crosswalk.Rds"),
+    by = c("addr_state" = "state_abb")
+  )
+
 # Define UI for application ====================================================
 
 ui <- fluidPage(
+  tags$head(tags$style(HTML("hr {border-top: 1px solid #000000;}"))),
   titlePanel("ML Explanation - LIME vs SHAP"),
-  sidebarLayout(
-    sidebarPanel(
-      # Subset sample
+  fluidRow(
+    column(
+      4,
       
-      # Select algorithm
-      
-      # FN/FP slider
-      
-      # Download buttons
-    ),  # close 'sidebarPanel'
-    tabsetPanel(
-      tabPanel(
-        "Exploratory Data Analysis", 
-        plotOutput("plot")
-      ),  # close EDA panel
-      
-      tabPanel(
-        "SHAP vs LIME", 
-        verbatimTextOutput("summary")
-      ),  # close Explanation panel
-      
-      tabPanel(
-        "Model Evaluation", 
-        tableOutput("table")
-      ),  # close Evaluation panel
-      
-      tabPanel(
-        "Model Tuning",
-        tableOutput("table")
-      )  # close Tuning panel
-    )  # close 'tabsetPanel'
-  )  # close 'sidebarLayout'
-)  # close 'fluidPage'
+      # Allow the user to filter the data by Region
+      selectInput(
+        "region_filter",
+        "Filter by Region",
+        c("All", lc_data %>% distinct(region_name) %>% pull(region_name))
+      )
+    )  # end Region input column
+  ),  # end row of inputs
+  tabsetPanel(
+    tabPanel(
+      "Exploratory Data Analysis",
+      column(4, plotOutput("class_bal_plot")),
+      column(4, plotOutput("chi_sq_plot")),
+      column(4, plotOutput("corr_plot")),
+      tags$hr(),
+      column(12, tableOutput("lc_skim_fct")),
+      tags$hr(),
+      column(12, tableOutput("lc_skim_num"))
+    ),  # end EDA panel def
+    
+    tabPanel(
+      "SHAP vs LIME"
+    ),  # end Explanation panel def
+    
+    tabPanel(
+      "Model Evaluation"
+    ),  # end Evaluation panel def
+    
+    tabPanel(
+      "Model Tuning"
+    )  # end Tuning panel def
+  )  # end 'tabsetPanel'
+)  # end UI definition
 
 
 # Define server logic ==========================================================
 
-server <- function(input, output) {} # close 'server' function
+server <- function(input, output) {
+  
+  filter_data <- reactive({
+    if (!input$region_filter %in% "All") {
+      return(filter(lc_data, region_name %in% input$region_filter))
+    }
+    
+    lc_data
+  })
+  
+  mod_data <- reactive({
+    filter_data() %>%
+      select(-region_name) %>%
+      mutate(across(where(is.factor), fct_drop))
+  })
+  
+  output$chi_sq_plot <- renderPlot(plot_chi_sq(mod_data() %>% select(-Class)))
+  
+  output$corr_plot <- renderPlot(plot_corr(mod_data() %>% select(-Class)))
+  
+  output$class_bal_plot <- renderPlot(plot_class_bal(mod_data(), Class))
+  
+  output$lc_skim_fct <- renderTable(
+    skimr::skim(mod_data() %>% select(where(is.factor)))
+  )
+  
+  output$lc_skim_num <- renderTable(
+    skimr::skim(mod_data() %>% select(where(is.numeric)))
+  )
+} # end 'server' function
 
 # Run the application ==========================================================
 shinyApp(ui = ui, server = server)
