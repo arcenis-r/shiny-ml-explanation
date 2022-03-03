@@ -173,6 +173,12 @@ server <- function(input, output) {
       mutate(across(where(is.factor), fct_drop))
   })
   
+  # Capture the user inputs when the "Train Model" button is clicked
+  mod_inputs <- eventReactive(
+    input$train_mod,
+    {list(df = mod_data(), algo = input$algo, mc_pref = input$misclass_pref)}
+  )
+  
   # Store the EDA plots and tables as reactive objects to use for display and
   # inclusion in the PDF
   chi_sq_plot <- reactive({plot_chi_sq(mod_data() %>% select(-Class))})
