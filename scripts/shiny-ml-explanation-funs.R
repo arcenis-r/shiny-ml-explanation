@@ -3,8 +3,10 @@ ml_eval_theme <- function() {
   theme_bw() + 
     theme(
       plot.title = element_text(hjust = 0.5, size = 18),
+      plot.subtitle = element_text(hjust = 0.5, size = 14),
       strip.text = element_text(size = 12, color = "white"),
-      strip.background = element_rect(fill = "#17468F")
+      strip.background = element_rect(fill = "#17468F"),
+      axis.text = element_text(size = 10)
     )
 }
 
@@ -72,10 +74,18 @@ plot_corr <- function(df) {
 plot_class_bal <- function(df, class_col) {
   class_col <- enquo(class_col)
   
+  total_n <- df %>% drop_na(!!class_col) %>% nrow()
+  
   df %>%
     select(!!class_col) %>%
     ggplot(aes(!!class_col, group = !!class_col)) +
     geom_bar(fill = "blue") +
     ml_eval_theme() +
-    labs(title = "Group Counts", x = "", y = "")
+    labs(
+      title = "Group Counts",
+      subtitle = str_c("Total obs: ", total_n),
+      x = "",
+      y = ""
+    )
 }
+

@@ -34,8 +34,10 @@ source("./scripts/shiny-ml-explanation-funs.R")
 
 ################################ Program start #################################
 
+# Load Lending Club data from 'modeldata'
 data(lending_club)
 
+# Merge the state-region crosswalk data to allow users to filter by region
 lc_data <- lending_club %>% 
   left_join(
     readr::read_rds("./data/state-region-crosswalk.Rds"),
@@ -46,29 +48,95 @@ lc_data <- lending_club %>%
 
 ui <- fluidPage(
   tags$head(tags$style(HTML("hr {border-top: 1px solid #000000;}"))),
-  titlePanel("ML Explanation - LIME vs SHAP"),
-  fluidRow(
-    column(
-      4,
+  titlePanel(
+    h1("Explaining ML - SHAP vs LIME", align = "center"),
+    windowTitle = "Explaining ML - SHAP vs LIME"
+  ),
+  wellPanel(
+    style = "background: lightblue",
+    tags$div(
+      class = "row",
       
-      # Allow the user to filter the data by Region
-      selectInput(
-        "region_filter",
-        "Filter by Region",
-        c("All", lc_data %>% distinct(region_name) %>% pull(region_name))
+      # Allow the user to filter data by Region
+      tags$div(
+        class = "col-xs-3",
+        selectInput(
+          "region_filter",
+          "Filter by Region",
+          c("All", lc_data %>% distinct(region_name) %>% pull(region_name)),
+          selected = "All"
+        )  # end Regioin input
+      ),  # end Region input column
+      
+      # Allow the user to select an algorithm for the model
+      tags$div(
+        class = "col-xs-3",
+        selectInput(
+          "algo",
+          "Select a Model Algorithm",
+          c(
+            "Decision Tree",
+            "Random Forest",
+            "Boosted Tree",
+            "Support Vector Machine",
+            "Multi-Layer Perceptron (NN)",
+            "Logistic Regression"
+          ),
+          selected = "Decision Tree"
+        )  # end algo input
+      ),  # end algo input column
+      
+      # Allow the user to express a misclassification preference
+      tags$div(
+        class = "col-xs-3",
+        radioButtons(
+          "misclass_pref",
+          "Misclassification Preference",
+          choiceNames = c(
+            "Avoid FN - Strong",
+            "Avoid FN - Moderate",
+            "Neutral",
+            "Avoid FP - Moderate",
+            "Avoid FP - Strong"
+          ),
+          choiceValues = c(
+            "avoid_fn_strong",
+            "avoid_fn_moderate",
+            "neutral",
+            "avoid_fp_moderate",
+            "avoid_fp_strong"
+          ),
+          selected = "neutral"
+        )  # end Misclassification Preference radio buttons
+      ),  # end Misclassification Preference column
+      
+      # Create buttons for different actions
+      tags$div(
+        class = "col-xs-3",
+        actionButton("train_mod", "Train Model", width = "100%"),
+        actionButton("dl_pdf", "Download PDF", width = "100%"),
+        actionButton("dl_mod_obj", "Download Model Objects", width = "100%")
       )
-    )  # end Region input column
-  ),  # end row of inputs
+    )  # end wellPanel row formatting
+  ),  # end wellPanel (inputs)
+  
   tabsetPanel(
     tabPanel(
       "Exploratory Data Analysis",
-      column(4, plotOutput("class_bal_plot")),
-      column(4, plotOutput("chi_sq_plot")),
-      column(4, plotOutput("corr_plot")),
+      
+      # Put 3 EDA plots into one row
+      fluidRow(
+        column(4, plotOutput("class_bal_plot")),
+        column(4, plotOutput("chi_sq_plot")),
+        column(4, plotOutput("corr_plot"))
+      ), # end row of plots
+      
       tags$hr(),
-      column(12, tableOutput("lc_skim_fct")),
+      
+      # Put {skimr} tables for factors and numerics each in its own row
+      fluidRow(tableOutput("skim_fct")),
       tags$hr(),
-      column(12, tableOutput("lc_skim_num"))
+      fluidRow(tableOutput("skim_num"))
     ),  # end EDA panel def
     
     tabPanel(
@@ -89,7 +157,7 @@ ui <- fluidPage(
 # Define server logic ==========================================================
 
 server <- function(input, output) {
-  
+  # Filter the data if a region is chosen
   filter_data <- reactive({
     if (!input$region_filter %in% "All") {
       return(filter(lc_data, region_name %in% input$region_filter))
@@ -98,26 +166,34 @@ server <- function(input, output) {
     lc_data
   })
   
+  # Final data wrangling
   mod_data <- reactive({
     filter_data() %>%
       select(-region_name) %>%
       mutate(across(where(is.factor), fct_drop))
   })
   
-  output$chi_sq_plot <- renderPlot(plot_chi_sq(mod_data() %>% select(-Class)))
+  # Store the EDA plots and tables as reactive objects to use for display and
+  # inclusion in the PDF
+  chi_sq_plot <- reactive({plot_chi_sq(mod_data() %>% select(-Class))})
+  corr_plot <- reactive({plot_corr(mod_data() %>% select(-Class))})
+  class_bal_plot <- reactive({plot_class_bal(mod_data(), Class)})
+  violin_plot <- reactive({plot_violins(mod_data())})
+  skim_fct <- reactive({
+    mod_data() %>% select(where(is.factor)) %>% skimr::skim()
+  })
+  skim_num <- reactive({
+    mod_data() %>% select(where(is.numeric)) %>% skimr::skim()
+  })
   
-  output$corr_plot <- renderPlot(plot_corr(mod_data() %>% select(-Class)))
-  
-  output$class_bal_plot <- renderPlot(plot_class_bal(mod_data(), Class))
-  
-  output$lc_skim_fct <- renderTable(
-    skimr::skim(mod_data() %>% select(where(is.factor)))
-  )
-  
-  output$lc_skim_num <- renderTable(
-    skimr::skim(mod_data() %>% select(where(is.numeric)))
-  )
+  # Create the output for the EDA tab
+  output$chi_sq_plot <- renderPlot(chi_sq_plot())
+  output$corr_plot <- renderPlot(corr_plot())
+  output$class_bal_plot <- renderPlot(class_bal_plot())
+  output$skim_fct <- renderTable(skim_fct())
+  output$skim_num <- renderTable(skim_num())
 } # end 'server' function
+
 
 # Run the application ==========================================================
 shinyApp(ui = ui, server = server)
