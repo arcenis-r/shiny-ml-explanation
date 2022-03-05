@@ -1,3 +1,97 @@
+################################################################################
+# Script name: shiny-ml-explanation-funs.R
+# Author: Arcenis Rojas
+# E-mail: arcenis.rojas@tutanota.com
+# Date created: 3/1/2022
+#
+# Script description: Contains helper functions for the ML Explanation - SHAP
+#   vs LIME shiny app
+#
+################################################################################
+
+# Notes ========================================================================
+
+
+
+# TODO Items ===================================================================
+
+
+
+# Modeling functions ===========================================================
+gen_wflow <- function(algo_name, train_data) {
+  mod_rec <- recipe(Class ~ ., train_data) %>%
+    step_nzv(all_predictors()) %>%
+    step_YeoJohnson(all_numeric_predictors())
+  
+  if (algo_name %in% "Logistic Regression") {
+    mod_rec <- mod_rec %>% step_dummy(all_nominal_predictors(), one_hot = FALSE)
+  } else {
+    mod_rec <- mod_rec %>% step_dummy(all_nominal_predictors(), one_hot = TRUE)
+  }
+  
+  mod_def <- switch(
+    algo_name,
+    "Decision Tree" = decision_tree(cost_complexity = tune()) %>%
+      set_engine("rpart"),
+    "Random Forest" = rand_forest(trees = tune(), mtry = tune()) %>%
+      set_engine("ranger"),
+    "Boosted Tree" = boost_tree(
+      trees = tune(), 
+      mtry = tune(),
+      learn_rate = tune()
+    ) %>%
+      set_engine("xgboost"),
+    "Multi-Layer Perceptron (NN)" = mlp(
+      hidden_units = tune(),
+      penalty = tune(),
+      dropout = tune(),
+      epochs = tune()
+    )%>%
+      set_engine("nnet"),
+    "Logistic Regression" = logistic_reg() %>% set_engine("glm")
+  )
+  
+  mod_def <- mod_def %>% set_mode("classification")
+  
+  workflow() %>% add_recipe(mod_rec) %>% add_model(mod_def)
+}
+
+choose_params <- function(wf, df, seed) {
+  set.seed = seed
+  finalize(parameters(wf), df)
+}
+
+tune_mod <- function(wf, folds, params, seed) {
+  tune_bayes(
+    wf,
+    resamples = folds,
+    param_info = params,
+    initial = 5,
+    iter = 20,
+    metrics = metric_set(roc_auc),
+    control = control_bayes(no_improve = 5, seed = seed)
+  )
+}
+
+
+# Extracting objects ===========================================================
+
+# Get the index number of a recipe step 
+get_rec_step_num <- function(rec, step_name_str) {
+  map_lgl(
+    rec$steps, 
+    ~ .x %>% 
+      attributes() %>% 
+      pluck("class") %>% 
+      map_lgl(~ str_detect(.x, step_name_str)) %>% 
+      any()
+  ) %>% 
+    which()
+}
+
+
+# Plotting functions ===========================================================
+
 # Create a ggplot2 theme to use throughout the project
 ml_eval_theme <- function() {
   theme_bw() + 
@@ -88,4 +182,3 @@ plot_class_bal <- function(df, class_col) {
       y = ""
     )
 }
-

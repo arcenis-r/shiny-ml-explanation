@@ -78,7 +78,6 @@ ui <- fluidPage(
             "Decision Tree",
             "Random Forest",
             "Boosted Tree",
-            "Support Vector Machine",
             "Multi-Layer Perceptron (NN)",
             "Logistic Regression"
           ),
@@ -113,8 +112,11 @@ ui <- fluidPage(
       # Create buttons for different actions
       tags$div(
         class = "col-xs-3",
+        br(),
         actionButton("train_mod", "Train Model", width = "100%"),
+        br(), br(),
         actionButton("dl_pdf", "Download PDF", width = "100%"),
+        br(), br(),
         actionButton("dl_mod_obj", "Download Model Objects", width = "100%")
       )
     )  # end wellPanel row formatting
@@ -148,7 +150,16 @@ ui <- fluidPage(
     ),  # end Evaluation panel def
     
     tabPanel(
-      "Model Tuning"
+      "Model Tuning",
+      # Create the UI for Logistic Regression
+      conditionalPanel(
+        condition = "input.algo %in% 'Logistic Regression'",
+        textOutput("lr_tuning_text")
+      ),
+      conditionalPanel(
+        condition = "!input.algo %in% 'Logistic Regression'",
+        tableOutput("best_mods")
+      )
     )  # end Tuning panel def
   )  # end 'tabsetPanel'
 )  # end UI definition
@@ -157,6 +168,8 @@ ui <- fluidPage(
 # Define server logic ==========================================================
 
 server <- function(input, output) {
+  # Wrangle the data -----------------------------------------------------------
+  
   # Filter the data if a region is chosen
   filter_data <- reactive({
     if (!input$region_filter %in% "All") {
@@ -170,14 +183,45 @@ server <- function(input, output) {
   mod_data <- reactive({
     filter_data() %>%
       select(-region_name) %>%
-      mutate(across(where(is.factor), fct_drop))
+      mutate(
+        across(where(is.factor), fct_drop),
+        Class = fct_relevel(Class, c("good", "bad"))
+      )
   })
+  
+  
+  # Perform pre-processing, tuning, training, and evaluation -------------------
   
   # Capture the user inputs when the "Train Model" button is clicked
   mod_inputs <- eventReactive(
     input$train_mod,
     {list(df = mod_data(), algo = input$algo, mc_pref = input$misclass_pref)}
   )
+  
+  # Split the data into training and testing sets
+  tt_split <- reactive({initial_split(mod_inputs()$df, 3/4, strata = Class)})
+  
+  # Split training data into cross-validation folds
+  cv_folds <- reactive({vfold_cv(training(tt_split()), v = 5, strata = Class)})
+  
+  # Build a model workflow
+  mod_wflow <- reactive({gen_wflow(input$algo, training(tt_split()))})
+  
+  # Set the hyperparameters for the model
+  hp_set <- reactive({
+    choose_params(mod_wflow(), training(tt_split()) %>% select(-Class), 500)
+  })
+  
+  # Tune the model and store the results
+  tune_results <- reactive({
+    withProgress(
+      message = "Tuning model hyperparameters",
+      tune_mod(mod_wflow(), cv_folds(), hp_set(), 384)
+    )
+  })
+  
+  
+  # Store plots and tables for output ------------------------------------------
   
   # Store the EDA plots and tables as reactive objects to use for display and
   # inclusion in the PDF
@@ -192,12 +236,28 @@ server <- function(input, output) {
     mod_data() %>% select(where(is.numeric)) %>% skimr::skim()
   })
   
-  # Create the output for the EDA tab
+  
+  # Create output objects for display ------------------------------------------
+  
+  # EDA tab
   output$chi_sq_plot <- renderPlot(chi_sq_plot())
   output$corr_plot <- renderPlot(corr_plot())
   output$class_bal_plot <- renderPlot(class_bal_plot())
   output$skim_fct <- renderTable(skim_fct())
   output$skim_num <- renderTable(skim_num())
+  
+  # Model Tuning tab
+  output$lr_tuning_text <- renderText({
+    if (mod_inputs()$algo %in% "Logistic Regression") {
+      "Logistic Regression does not get tuned."
+    }
+  })
+  
+  output$best_mods <- renderTable({
+    if (!mod_inputs()$algo %in% "Logistic Regression") {
+      show_best(tune_results())
+    }
+  })
 } # end 'server' function
 
 
