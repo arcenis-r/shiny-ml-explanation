@@ -15,7 +15,10 @@
 
 
 # TODO Items ===================================================================
-
+# TODO: Write code for finalizing the model 
+# TODO: Generate model metrics
+# TODO: Implement cut-off selection based on user preference
+# TODO: Learn to create LIME summary plot (using SHAP variable importance)
 
 
 # Set up the environment =======================================================
@@ -92,20 +95,14 @@ ui <- fluidPage(
           "misclass_pref",
           "Misclassification Preference",
           choiceNames = c(
-            "Avoid FN - Strong",
-            "Avoid FN - Moderate",
+            "Reduce FPR - Strong",
+            "Reduce FPR - Moderate",
             "Neutral",
-            "Avoid FP - Moderate",
-            "Avoid FP - Strong"
+            "Reduce FNR - Moderate",
+            "Reduce FNR - Strong"
           ),
-          choiceValues = c(
-            "avoid_fn_strong",
-            "avoid_fn_moderate",
-            "neutral",
-            "avoid_fp_moderate",
-            "avoid_fp_strong"
-          ),
-          selected = "neutral"
+          choiceValues = c(1:5),
+          selected = "3"
         )  # end Misclassification Preference radio buttons
       ),  # end Misclassification Preference column
       
@@ -142,14 +139,6 @@ ui <- fluidPage(
     ),  # end EDA panel def
     
     tabPanel(
-      "SHAP vs LIME"
-    ),  # end Explanation panel def
-    
-    tabPanel(
-      "Model Evaluation"
-    ),  # end Evaluation panel def
-    
-    tabPanel(
       "Model Tuning",
       # Create the UI for Logistic Regression
       conditionalPanel(
@@ -158,9 +147,27 @@ ui <- fluidPage(
       ),
       conditionalPanel(
         condition = "!input.algo %in% 'Logistic Regression'",
-        tableOutput("best_mods")
+        tableOutput("best_mod")
       )
-    )  # end Tuning panel def
+    ),  # end Tuning panel def
+    
+    tabPanel(
+      "Model Evaluation",
+      tags$div(align = "center", tableOutput("mod_metrics_table")),
+      plotOutput("roc_plot")
+    ),  # end Explanation panel def
+    
+    tabPanel(
+      "SHAP"
+    ),  # end Evaluation panel def
+    
+    tabPanel(
+      "LIME"
+    ),
+    
+    tabPanel(
+      "Partial Dependence Plot"
+    )
   )  # end 'tabsetPanel'
 )  # end UI definition
 
@@ -190,19 +197,25 @@ server <- function(input, output) {
   })
   
   
-  # Perform pre-processing, tuning, training, and evaluation -------------------
+  # Perform pre-processing, tuning, and training -------------------------------
   
   # Capture the user inputs when the "Train Model" button is clicked
   mod_inputs <- eventReactive(
     input$train_mod,
-    {list(df = mod_data(), algo = input$algo, mc_pref = input$misclass_pref)}
+    {list(df = mod_data(), algo = input$algo, err_pref = input$misclass_pref)}
   )
   
   # Split the data into training and testing sets
-  tt_split <- reactive({initial_split(mod_inputs()$df, 3/4, strata = Class)})
+  tt_split <- reactive({
+    set.seed(200)
+    initial_split(mod_inputs()$df, 3/4, strata = Class)
+  })
   
   # Split training data into cross-validation folds
-  cv_folds <- reactive({vfold_cv(training(tt_split()), v = 5, strata = Class)})
+  cv_folds <- reactive({
+    set.seed(479)
+    vfold_cv(training(tt_split()), v = 5, strata = Class)
+  })
   
   # Build a model workflow
   mod_wflow <- reactive({gen_wflow(input$algo, training(tt_split()))})
@@ -216,12 +229,54 @@ server <- function(input, output) {
   tune_results <- reactive({
     withProgress(
       message = "Tuning model hyperparameters",
-      tune_mod(mod_wflow(), cv_folds(), hp_set(), 384)
+      tune_mod(mod_wflow(), mod_inputs()$algo, cv_folds(), hp_set(), 384)
     )
   })
   
   
-  # Store plots and tables for output ------------------------------------------
+  # Generate model evaluation objects ------------------------------------------
+  
+  # Select the best model
+  best_mod <- reactive({select_best(tune_results(), metric = "roc_auc")})
+  
+  # Fit the model with the best parameters to the entire training dataset
+  final_wflow <- reactive({finalize_workflow(mod_wflow(), best_mod())})
+  
+  # Evaluate the model with the test data and store a 'last_fit' object
+  final_wflow_eval <- reactive({
+    set.seed(845)
+    last_fit(
+      final_wflow(),
+      split = tt_split(),
+      metrics = metric_set(roc_auc)
+    )
+  })
+  
+  # Get table of probability cutoff thresholds
+  cutoff_thresh <- reactive({
+    get_cutoff_threshold_data(final_wflow_eval(), Class, .pred_good)
+  })
+  
+  # Calculate the best cutoff given the user's preference
+  opt_cutoff <- reactive({
+    pluck(cutoff_thresh(), "threshold_data") %>% 
+      get_best_cutoff(as.numeric(mod_inputs()$err_pref))
+  })
+  
+  # Generate a dataframe of model metrics
+  model_metrics <- reactive({
+    get_ys_metrics(
+      cutoff_thresh()$preds, 
+      opt_cutoff(),
+      Class,
+      .pred_good,
+      "good",
+      "bad"
+    )
+  })
+  
+  
+  # Store additional plots and tables for output -------------------------------
   
   # Store the EDA plots and tables as reactive objects to use for display and
   # inclusion in the PDF
@@ -253,10 +308,33 @@ server <- function(input, output) {
     }
   })
   
-  output$best_mods <- renderTable({
+  output$best_mod <- renderTable({
     if (!mod_inputs()$algo %in% "Logistic Regression") {
       show_best(tune_results())
     }
+  })
+  
+  # Model Evaluation tab
+  output$mod_metrics_table <- renderTable({
+    model_metrics()$ys_metrics
+  })
+  
+  output$roc_plot <- renderPlot({
+    model_metrics()$roc_curve_dat %>%
+      mutate(fpr = 1 - specificity) %>%
+      ggplot(aes(x = fpr, y = sensitivity)) +
+      geom_path(color = "black") +
+      geom_abline(slope = 1, intercept = 0, lty = 2, color = "red") +
+      ml_eval_theme() +
+      labs(
+        title = "ROC Curve",
+        subtitle = str_c(
+          "AUC: ", 
+          scales::percent(model_metrics()$ys_metrics$roc_auc, accuracy = .1)
+        ),
+        y = "True Positive Rate (Sensitivity)",
+        x = "False Positive Rate (1 - Specificity)"
+      )
   })
 } # end 'server' function
 
