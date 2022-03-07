@@ -11,7 +11,7 @@
 ################################################################################
 
 # Notes ========================================================================
-
+# Consider adding SMOTE to the pre-processing
 
 
 # TODO Items ===================================================================
@@ -141,14 +141,15 @@ ui <- fluidPage(
     tabPanel(
       "Model Tuning",
       # Create the UI for Logistic Regression
-      conditionalPanel(
-        condition = "input.algo %in% 'Logistic Regression'",
-        textOutput("lr_tuning_text")
-      ),
-      conditionalPanel(
-        condition = "!input.algo %in% 'Logistic Regression'",
-        tableOutput("best_mod")
-      )
+      # conditionalPanel(
+      #   condition = "input.algo %in% 'Logistic Regression'",
+      #   textOutput("lr_tuning_text")
+      # ),
+      # conditionalPanel(
+      #   condition = "!input.algo %in% 'Logistic Regression'",
+      #   tableOutput("best_mod")
+      # )
+      tableOutput("best_mod")
     ),  # end Tuning panel def
     
     tabPanel(
@@ -159,18 +160,20 @@ ui <- fluidPage(
     
     tabPanel(
       "SHAP",
-      # tableOutput("shap_table")
-      # verbatimTextOutput("shap_class")
       plotOutput("shap_summary_plot")
     ),  # end SHAP panel def
     
     tabPanel(
       "LIME"
-    ),  # end LIM panel def
+    ),  # end LIME panel def
     
     tabPanel(
-      "Partial Dependence Plot & Variable Importance",
+      "Variable Importance",
       plotOutput("var_imp_plot")
+    ),  # end Variable Importance panel def
+    
+    tabPanel(
+      "Partial Dependence"
     )  # end PD and Var Imp panel def
   )  # end 'tabsetPanel'
 )  # end UI definition
@@ -359,16 +362,18 @@ server <- function(input, output) {
   output$skim_num <- renderTable(skim_num())
   
   # Model Tuning tab
-  output$lr_tuning_text <- renderText({
-    if (mod_inputs()$algo %in% "Logistic Regression") {
-      "Logistic Regression does not get tuned."
-    }
-  })
+  # output$lr_tuning_text <- renderText({
+  #   if (mod_inputs()$algo %in% "Logistic Regression") {
+  #     "Logistic Regression does not get tuned."
+  #   }
+  # })
   
   output$best_mod <- renderTable({
-    if (!mod_inputs()$algo %in% "Logistic Regression") {
-      show_best(tune_results())
-    }
+    # if (!mod_inputs()$algo %in% "Logistic Regression") {
+    #   show_best(tune_results())
+    # }
+    
+    show_best(tune_results())
   })
   
   # Model Evaluation tab

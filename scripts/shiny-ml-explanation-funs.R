@@ -21,9 +21,13 @@
 
 # Build a workflow object given an algorithm name (from the UI) and training 
 # data
-gen_wflow <- function(algo_name, train_data) {
-  mod_rec <- recipe(Class ~ ., train_data) %>%
-    step_nzv(all_predictors()) %>%
+gen_wflow <- function(algo_name, train_data, dep_var) {
+  dep_var <- enquo(dep_var)
+  
+  mod_rec <- recipe(train_data) %>%
+    update_role(!!dep_var, new_role = "outcome") %>%
+    update_role(-all_outcomes(), new_role = "predictor") %>%
+    step_nzv(all_predictors(freq_cut = )) %>%
     step_YeoJohnson(all_numeric_predictors())
   
   if (algo_name %in% "Logistic Regression") {
@@ -31,6 +35,9 @@ gen_wflow <- function(algo_name, train_data) {
   } else {
     mod_rec <- mod_rec %>% step_dummy(all_nominal_predictors(), one_hot = TRUE)
   }
+  
+  mod_rec <- mod_rec %>%
+    themis::step_smote(!!dep_var, over_ratio = tune(), skip = TRUE, seed = 732)
   
   mod_def <- switch(
     algo_name,
@@ -67,15 +74,15 @@ choose_params <- function(x, df, seed) {
 
 # Tune a model using Bayesian optimization
 tune_mod <- function(wf, algo_name, folds, params, seed) {
-  if (algo_name %in% "Logistic Regression") {
-    return(
-      fit_resamples(
-        wf,
-        resamples = folds,
-        metrics = metric_set(roc_auc)
-      )
-    )
-  }
+  # if (algo_name %in% "Logistic Regression") {
+  #   return(
+  #     fit_resamples(
+  #       wf,
+  #       resamples = folds,
+  #       metrics = metric_set(roc_auc)
+  #     )
+  #   )
+  # }
   
   tune_bayes(
     wf,
