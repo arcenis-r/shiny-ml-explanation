@@ -110,11 +110,11 @@ ui <- fluidPage(
       tags$div(
         class = "col-xs-3",
         br(),
-        actionButton("train_mod", "Train Model", width = "100%"),
+        actionButton("train_mod", "Train Model", width = "75%"),
         br(), br(),
-        actionButton("dl_pdf", "Download PDF", width = "100%"),
+        actionButton("dl_pdf", "Download PDF", width = "75%"),
         br(), br(),
-        actionButton("dl_mod_obj", "Download Model Objects", width = "100%")
+        actionButton("dl_mod_obj", "Download Model Objects", width = "75%")
       )
     )  # end wellPanel row formatting
   ),  # end wellPanel (inputs)
@@ -155,19 +155,23 @@ ui <- fluidPage(
       "Model Evaluation",
       tags$div(align = "center", tableOutput("mod_metrics_table")),
       plotOutput("roc_plot")
-    ),  # end Explanation panel def
+    ),  # end Model Evaluation panel def
     
     tabPanel(
-      "SHAP"
-    ),  # end Evaluation panel def
+      "SHAP",
+      # tableOutput("shap_table")
+      # verbatimTextOutput("shap_class")
+      plotOutput("shap_summary_plot")
+    ),  # end SHAP panel def
     
     tabPanel(
       "LIME"
-    ),
+    ),  # end LIM panel def
     
     tabPanel(
-      "Partial Dependence Plot"
-    )
+      "Partial Dependence Plot & Variable Importance",
+      plotOutput("var_imp_plot")
+    )  # end PD and Var Imp panel def
   )  # end 'tabsetPanel'
 )  # end UI definition
 
@@ -197,12 +201,19 @@ server <- function(input, output) {
   })
   
   
-  # Perform pre-processing, tuning, and training -------------------------------
+  # Perform pre-processing and model tuning ------------------------------------
   
   # Capture the user inputs when the "Train Model" button is clicked
   mod_inputs <- eventReactive(
     input$train_mod,
-    {list(df = mod_data(), algo = input$algo, err_pref = input$misclass_pref)}
+    {
+      list(
+        df = mod_data(),
+        region = input$region_filter,
+        algo = input$algo, 
+        err_pref = input$misclass_pref
+      )
+    }
   )
   
   # Split the data into training and testing sets
@@ -234,7 +245,7 @@ server <- function(input, output) {
   })
   
   
-  # Generate model evaluation objects ------------------------------------------
+  # Train a final model and generate evaluation objects ------------------------
   
   # Select the best model
   best_mod <- reactive({select_best(tune_results(), metric = "roc_auc")})
@@ -276,6 +287,33 @@ server <- function(input, output) {
   })
   
   
+  # Generate Variable Importance, SHAP, and LIME objects -----------------------
+  
+  # Get a matrix of training features for the model
+  training_features <- reactive({
+    set.seed(8405)
+    extract_mold(final_wflow_eval()) %>% pluck("predictors")
+  })
+  
+  # Generate variable importance values
+  set.seed(8405)
+  var_imp <- reactive({
+    withProgress(
+      message = "Calculating permutative variable importance",
+      get_var_imp(final_wflow_eval(), "good", tidy_pred)
+    )
+  })
+  
+  # Get SHAP values
+  shap <- reactive({
+    set.seed(44)
+    withProgress(
+      message = "Calculating SHAP values",
+      get_shap(final_wflow_eval(), tidy_pred)
+    )
+  })
+  
+  
   # Store additional plots and tables for output -------------------------------
   
   # Store the EDA plots and tables as reactive objects to use for display and
@@ -289,6 +327,25 @@ server <- function(input, output) {
   })
   skim_num <- reactive({
     mod_data() %>% select(where(is.numeric)) %>% skimr::skim()
+  })
+  
+  # Store ROC plot
+  roc_plot <- reactive({
+    plot_roc(model_metrics()$roc_curve_dat, model_metrics()$ys_metrics$roc_auc)
+  })
+  
+  # Model metrics table
+  model_metrics_table <- reactive({model_metrics()$ys_metrics})
+  
+  # Variable Importance Plot
+  var_imp_plot <- reactive({
+    plot_var_imp(var_imp(), mod_inputs()$algo, mod_inputs()$region, 10)
+  })
+  
+  # Store SHAP plot
+  shap_summary_plot <- reactive({
+    get_shap_summary(var_imp(), shap(), training_features(), 10) %>%
+      plot_shap_summary(mod_inputs()$algo, mod_inputs()$region)
   })
   
   
@@ -315,27 +372,17 @@ server <- function(input, output) {
   })
   
   # Model Evaluation tab
-  output$mod_metrics_table <- renderTable({
-    model_metrics()$ys_metrics
-  })
+  output$mod_metrics_table <- renderTable(model_metrics_table())
   
-  output$roc_plot <- renderPlot({
-    model_metrics()$roc_curve_dat %>%
-      mutate(fpr = 1 - specificity) %>%
-      ggplot(aes(x = fpr, y = sensitivity)) +
-      geom_path(color = "black") +
-      geom_abline(slope = 1, intercept = 0, lty = 2, color = "red") +
-      ml_eval_theme() +
-      labs(
-        title = "ROC Curve",
-        subtitle = str_c(
-          "AUC: ", 
-          scales::percent(model_metrics()$ys_metrics$roc_auc, accuracy = .1)
-        ),
-        y = "True Positive Rate (Sensitivity)",
-        x = "False Positive Rate (1 - Specificity)"
-      )
-  })
+  output$roc_plot <- renderPlot(roc_plot())
+  
+  # SHAP tab
+  # output$shap_class <- renderPrint(str(shap_summary_plot()))
+  # output$shap_table <- renderPlot({as.data.frame(shap())})
+  output$shap_summary_plot <- renderPlot(shap_summary_plot())
+  
+  # Partial Dependence Plot & Variable Importance tab
+  output$var_imp_plot <- renderPlot(var_imp_plot())
 } # end 'server' function
 
 

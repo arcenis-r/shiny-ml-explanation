@@ -141,6 +141,9 @@ get_best_cutoff <- function(threshold_dat, err_pref) {
   }
 }
 
+
+# Model evaluation functions ===================================================
+
 # Store a 'metrics' object with the metrics to calculate
 ys_metrics <- metric_set(mcc, bal_accuracy, sensitivity, specificity)
 
@@ -170,6 +173,71 @@ get_ys_metrics <- function(pred_data, cutoff, tr, est, outcome_1, outcome_0) {
     mutate(cutoff = cutoff)
   
   list(cutoff = cutoff, ys_metrics = add_metrics, roc_curve_dat = roc_curve_dat)
+}
+
+# Wrapper for a predicting on Tidy objects
+tidy_pred <- function(object, newdata) {
+  predict.model_fit(object, new_data = newdata, type = "prob") %>%
+    pull(.pred_good)
+}
+
+
+# Get permutative variable importance given a finalized model workflow
+get_var_imp <- function(wflow, ref_class, pred_fun) {
+  mod <- extract_fit_parsnip(wflow)
+  train_dat <- extract_mold(wflow) %>% pluck("predictors")
+  target_dat <- extract_mold(wflow) %>% pluck("outcomes")
+  
+  vi_df <- vip::vi_permute(
+    mod, 
+    train = train_dat, 
+    target = target_dat, 
+    metric = "auc",
+    pred_wrapper = pred_fun,
+    reference_class = ref_class,
+    nsim = 10,
+    paralell = TRUE
+  )
+}
+
+# Get a dataframe of SHAP values for each combination of feature and observation
+get_shap <- function(wflow, pred_fun) {
+  fastshap::explain(
+    extract_fit_parsnip(wflow),
+    X = extract_mold(wflow) %>% pluck("predictors") %>% as.matrix(),
+    feature_names = extract_mold(wflow) %>% 
+      pluck("predictors") %>% 
+      colnames(),
+    pred_wrapper = pred_fun,
+    nsim = 10
+  )
+}
+
+# Get a SHAP summary dataframe that contains feature observations, predictions,
+# and permutative importance
+get_shap_summary <- function(vi, shap_df, feat_df, max_features = 10) {
+  vi <- vi %>%
+    set_names(colnames(.) %>% str_to_lower()) %>%
+    slice_max(importance, n = max_features, with_ties = FALSE)
+  
+  shap_df <- shap_df %>%
+    as_tibble() %>%
+    mutate(id = row_number()) %>%
+    pivot_longer(cols = -id, names_to = "variable", values_to = "shap_value")
+  
+  feat_df <- feat_df %>% 
+    mutate(id = row_number()) %>%
+    pivot_longer(cols = -id, names_to = "variable", values_to = "feature_value")
+  
+  left_join(shap_df, feat_df, by = c("variable", "id")) %>%
+    right_join(vi, by = "variable") %>%
+    mutate(
+      variable = str_c(
+        variable, 
+        " (", format(round(importance, 3), nsmall = 3), ")"
+      )
+    ) %>%
+    arrange(desc(importance))
 }
 
 
@@ -235,7 +303,7 @@ plot_chi_sq <- function(df) {
     labs(
       title = "Chi-square Plot of Categorical Variables",
       color = "P-value"
-    ) +
+    ) + 
     ml_eval_theme() +
     theme(
       axis.title = element_blank(),
@@ -282,4 +350,56 @@ plot_class_bal <- function(df, class_col) {
       x = "",
       y = ""
     )
+}
+
+# Create a plot of the ROC Curve
+plot_roc <- function(roc_df, auc) {
+  roc_df %>%
+    mutate(fpr = 1 - specificity) %>%
+    ggplot(aes(x = fpr, y = sensitivity)) +
+    geom_path(color = "black") +
+    geom_abline(slope = 1, intercept = 0, lty = 2, color = "red") +
+    ml_eval_theme() +
+    labs(
+      title = "ROC Curve",
+      subtitle = str_c("AUC: ", scales::percent(auc, accuracy = .1)),
+      y = "True Positive Rate (Sensitivity)",
+      x = "False Positive Rate (1 - Specificity)"
+    )
+}
+
+# Create a variable importance plot
+plot_var_imp <- function(vi_df, algo_name, region_name, max_features = 10) {
+  vi_plot_df <- vi_df %>% 
+    slice_max(Importance, n = max_features) %>%
+    arrange(desc(Importance))
+  
+  vi_plot_df %>% 
+    vip::vip() +
+    ml_eval_theme() +
+    labs(
+      title = paste("Variable Importance:", algo_name),
+      subtitle = str_c("(", region_name, ")")
+    )
+}
+
+# Create a SHAP summary plot
+plot_shap_summary <- function(shap_summary_df, algo_name, region_name) {
+  region_string <- paste0("(", region_name, ")")
+  
+  shap_summary_df %>%
+    ggplot(
+      aes(shap_value, fct_rev(fct_inorder(variable)), color = feature_value)
+    ) +
+    geom_jitter(height = 0.2, alpha = 0.8) +
+    geom_vline(xintercept = 0, size = 1) +
+    scale_color_gradient(low = "blue", high = "red") +
+    labs(
+      title = paste("SHAP Summary Plot:", algo_name),
+      subtitle = region_string,
+      x = "SHAP Value",
+      y = NULL,
+      color = "Feature Value"
+    ) + 
+    ml_eval_theme()
 }
