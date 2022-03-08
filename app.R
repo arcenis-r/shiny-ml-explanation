@@ -141,15 +141,14 @@ ui <- fluidPage(
     tabPanel(
       "Model Tuning",
       # Create the UI for Logistic Regression
-      # conditionalPanel(
-      #   condition = "input.algo %in% 'Logistic Regression'",
-      #   textOutput("lr_tuning_text")
-      # ),
-      # conditionalPanel(
-      #   condition = "!input.algo %in% 'Logistic Regression'",
-      #   tableOutput("best_mod")
-      # )
-      tableOutput("best_mod")
+      conditionalPanel(
+        condition = "input.algo %in% 'Logistic Regression'",
+        textOutput("lr_tuning_text")
+      ),
+      conditionalPanel(
+        condition = "!input.algo %in% 'Logistic Regression'",
+        tableOutput("best_mod")
+      )
     ),  # end Tuning panel def
     
     tabPanel(
@@ -362,18 +361,16 @@ server <- function(input, output) {
   output$skim_num <- renderTable(skim_num())
   
   # Model Tuning tab
-  # output$lr_tuning_text <- renderText({
-  #   if (mod_inputs()$algo %in% "Logistic Regression") {
-  #     "Logistic Regression does not get tuned."
-  #   }
-  # })
+  output$lr_tuning_text <- renderText({
+    if (mod_inputs()$algo %in% "Logistic Regression") {
+      "Logistic Regression does not get tuned."
+    }
+  })
   
   output$best_mod <- renderTable({
-    # if (!mod_inputs()$algo %in% "Logistic Regression") {
-    #   show_best(tune_results())
-    # }
-    
-    show_best(tune_results())
+    if (!mod_inputs()$algo %in% "Logistic Regression") {
+      show_best(tune_results())
+    }
   })
   
   # Model Evaluation tab
@@ -382,8 +379,6 @@ server <- function(input, output) {
   output$roc_plot <- renderPlot(roc_plot())
   
   # SHAP tab
-  # output$shap_class <- renderPrint(str(shap_summary_plot()))
-  # output$shap_table <- renderPlot({as.data.frame(shap())})
   output$shap_summary_plot <- renderPlot(shap_summary_plot())
   
   # Partial Dependence Plot & Variable Importance tab

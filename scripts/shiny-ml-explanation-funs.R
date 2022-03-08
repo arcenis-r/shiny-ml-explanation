@@ -74,15 +74,15 @@ choose_params <- function(x, df, seed) {
 
 # Tune a model using Bayesian optimization
 tune_mod <- function(wf, algo_name, folds, params, seed) {
-  # if (algo_name %in% "Logistic Regression") {
-  #   return(
-  #     fit_resamples(
-  #       wf,
-  #       resamples = folds,
-  #       metrics = metric_set(roc_auc)
-  #     )
-  #   )
-  # }
+  if (algo_name %in% "Logistic Regression") {
+    return(
+      fit_resamples(
+        wf,
+        resamples = folds,
+        metrics = metric_set(roc_auc)
+      )
+    )
+  }
   
   tune_bayes(
     wf,
