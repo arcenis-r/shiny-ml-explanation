@@ -102,11 +102,11 @@ ui <- fluidPage(
           "misclass_pref",
           "Misclassification Preference",
           choiceNames = c(
-            "Reduce FPR - Strong",
-            "Reduce FPR - Moderate",
-            "Neutral",
-            "Reduce FNR - Moderate",
-            "Reduce FNR - Strong"
+            "Avoid False Positives - Strong",
+            "Avoid False Positives - Moderate",
+            "Neutral (Optimal Cutoff)",
+            "Avoid False Negatives - Moderate",
+            "Avoid False Negatives - Strong"
           ),
           choiceValues = c(1:5),
           selected = "3"
@@ -117,11 +117,11 @@ ui <- fluidPage(
       tags$div(
         class = "col-xs-3",
         br(),
-        actionButton("train_mod", "Train Model", width = "75%"),
-        br(), br(),
-        actionButton("dl_pdf", "Download PDF", width = "75%"),
-        br(), br(),
-        actionButton("dl_mod_obj", "Download Model Objects", width = "75%")
+        actionButton("train_mod", "Train Model", width = "75%")
+        # br(), br(),
+        # actionButton("dl_pdf", "Download PDF", width = "75%"),
+        # br(), br(),
+        # actionButton("dl_mod_obj", "Download Model Objects", width = "75%")
       )
     )  # end wellPanel row formatting
   ),  # end wellPanel (inputs)
