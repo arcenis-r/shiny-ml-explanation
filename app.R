@@ -15,10 +15,13 @@
 
 
 # TODO Items ===================================================================
-# TODO: Write code for finalizing the model 
-# TODO: Generate model metrics
-# TODO: Implement cut-off selection based on user preference
-# TODO: Learn to create LIME summary plot (using SHAP variable importance)
+# TODO: Generate LIME values
+# TODO: Calculate importance scores for both SHAP and LIME
+# TODO: Generate plots for SHAP vs LIME (summary plots and max "good" and max
+#   "bad" plots... 3 plots for each method)
+# TODO: Create bar plot containing 3 types of variable importance measures
+# TODO: Create partial dependence plots for the top 4 numeric variables in terms
+#   of permutative variable importance
 
 
 # Set up the environment =======================================================
@@ -28,7 +31,6 @@ rm(list = ls())
 # Load required packages
 library(tidyverse)
 library(tidymodels)
-library(lime)
 library(shiny)
 
 # Load / declare helper functions
@@ -50,10 +52,15 @@ lc_data <- lending_club %>%
 # Define UI for application ====================================================
 
 ui <- fluidPage(
-  tags$head(tags$style(HTML("hr {border-top: 1px solid #000000;}"))),
+  tags$head(
+    tags$style(
+      HTML("hr {border-top: 1px solid #000000;}"),
+      ".expSummRow{height:500px;}"
+    )
+  ),
   titlePanel(
-    h1("Explaining ML - SHAP vs LIME", align = "center"),
-    windowTitle = "Explaining ML - SHAP vs LIME"
+    h1("Opening The 'Black Box'", align = "center"),
+    windowTitle = "Opening The 'Black Box'"
   ),
   wellPanel(
     style = "background: lightblue",
@@ -120,14 +127,15 @@ ui <- fluidPage(
   ),  # end wellPanel (inputs)
   
   tabsetPanel(
+    id = "tabs",
     tabPanel(
       "Exploratory Data Analysis",
       
       # Put 3 EDA plots into one row
       fluidRow(
-        column(4, plotOutput("class_bal_plot")),
         column(4, plotOutput("chi_sq_plot")),
-        column(4, plotOutput("corr_plot"))
+        column(3, plotOutput("class_bal_plot")),
+        column(5, plotOutput("corr_plot"))
       ), # end row of plots
       
       tags$hr(),
@@ -153,18 +161,30 @@ ui <- fluidPage(
     
     tabPanel(
       "Model Evaluation",
-      tags$div(align = "center", tableOutput("mod_metrics_table")),
-      plotOutput("roc_plot")
+      column(
+        width = 3,
+        tags$div(align = "center", tableOutput("mod_metrics_table"))
+      ),
+      # tags$div(align = "center", tableOutput("mod_metrics_table")),
+      column(width = 6, plotOutput("roc_plot"))
     ),  # end Model Evaluation panel def
     
     tabPanel(
       "SHAP",
-      plotOutput("shap_summary_plot")
+      plotOutput("shap_summary_plot"),
+      fluidRow(
+        column(width = 6, plotOutput("shap_contrib_good")),
+        column(width = 6, plotOutput("shap_contrib_bad"))
+      )
     ),  # end SHAP panel def
     
-    tabPanel(
-      "LIME"
-    ),  # end LIME panel def
+    # tabPanel(
+    #   "LIME",
+    #   verbatimTextOutput("lime_str")
+    #   plotOutput("lime_summary_plot"),
+    #   plotOutput("lime_contrib_good"),
+    #   plotOutput("lime_contrib_bad")
+    # ),  # end LIME panel def
     
     tabPanel(
       "Variable Importance",
@@ -172,7 +192,8 @@ ui <- fluidPage(
     ),  # end Variable Importance panel def
     
     tabPanel(
-      "Partial Dependence"
+      "Partial Dependence",
+      plotOutput("pdp_plot")
     )  # end PD and Var Imp panel def
   )  # end 'tabsetPanel'
 )  # end UI definition
@@ -209,6 +230,12 @@ server <- function(input, output) {
   mod_inputs <- eventReactive(
     input$train_mod,
     {
+      if (input$algo %in% "Logistic_Regression") {
+        hideTab("tabs", "Model Tuning")
+      } else {
+        showTab("tabs", "Model Tuning")
+      }
+      
       list(
         df = mod_data(),
         region = input$region_filter,
@@ -231,7 +258,9 @@ server <- function(input, output) {
   })
   
   # Build a model workflow
-  mod_wflow <- reactive({gen_wflow(input$algo, training(tt_split()))})
+  mod_wflow <- reactive({
+    gen_wflow(mod_inputs()$algo, training(tt_split()), Class)
+  })
   
   # Set the hyperparameters for the model
   hp_set <- reactive({
@@ -241,7 +270,7 @@ server <- function(input, output) {
   # Tune the model and store the results
   tune_results <- reactive({
     withProgress(
-      message = "Tuning model hyperparameters",
+      message = "Resampling and tuning model hyperparameters",
       tune_mod(mod_wflow(), mod_inputs()$algo, cv_folds(), hp_set(), 384)
     )
   })
@@ -253,7 +282,11 @@ server <- function(input, output) {
   best_mod <- reactive({select_best(tune_results(), metric = "roc_auc")})
   
   # Fit the model with the best parameters to the entire training dataset
-  final_wflow <- reactive({finalize_workflow(mod_wflow(), best_mod())})
+  final_wflow <- reactive({
+    set.seed(9474)
+    finalize_workflow(mod_wflow(), best_mod()) %>%
+      fit(data = training(tt_split()))
+  })
   
   # Evaluate the model with the test data and store a 'last_fit' object
   final_wflow_eval <- reactive({
@@ -278,14 +311,33 @@ server <- function(input, output) {
   
   # Generate a dataframe of model metrics
   model_metrics <- reactive({
-    get_ys_metrics(
-      cutoff_thresh()$preds, 
-      opt_cutoff(),
-      Class,
-      .pred_good,
-      "good",
-      "bad"
+    withProgress(
+      message = "Calculating model metrics",
+      get_ys_metrics(
+        cutoff_thresh()$preds, 
+        opt_cutoff(),
+        Class,
+        .pred_good,
+        "good",
+        "bad"
+      )
     )
+  })
+  
+  # Get the row numbers of the observations that have the highest probabilities
+  # of being predicted as "good" and "bad" respectively
+  max_pred_good_row <- reactive({
+    collect_predictions(final_wflow_eval()) %>% 
+      slice_max(.pred_good) %>%
+      slice(1) %>% 
+      pull(.row)
+  })
+  
+  max_pred_bad_row <- reactive({
+    collect_predictions(final_wflow_eval()) %>% 
+      slice_max(.pred_bad) %>%
+      slice(1) %>% 
+      pull(.row)
   })
   
   
@@ -293,20 +345,19 @@ server <- function(input, output) {
   
   # Get a matrix of training features for the model
   training_features <- reactive({
-    set.seed(8405)
     extract_mold(final_wflow_eval()) %>% pluck("predictors")
   })
   
-  # Generate variable importance values
-  set.seed(8405)
+  # Generate Permutative variable importance values
   var_imp <- reactive({
+    set.seed(8405)
     withProgress(
       message = "Calculating permutative variable importance",
       get_var_imp(final_wflow_eval(), "good", tidy_pred)
     )
   })
   
-  # Get SHAP values
+  # Calculate SHAP values
   shap <- reactive({
     set.seed(44)
     withProgress(
@@ -314,6 +365,28 @@ server <- function(input, output) {
       get_shap(final_wflow_eval(), tidy_pred)
     )
   })
+  
+  # Generate SHAP variable importance
+  shap_var_imp <- reactive({
+    withProgress(
+      message = "Calculating SHAP variable importance",
+      get_shap_imp(shap())
+    )
+  })
+  
+  # Calculate LIME values
+  # lime_expl <- reactive({
+  #   set.seed(27)
+  #   withProgress(
+  #     message = "Calculating LIME values",
+  #     get_lime(
+  #       training(tt_split()), 
+  #       testing(tt_split()), 
+  #       extract_fit_parsnip(final_wflow_eval()), 
+  #       nfeatures = 10
+  #     )
+  #   )
+  # })
   
   
   # Store additional plots and tables for output -------------------------------
@@ -341,13 +414,57 @@ server <- function(input, output) {
   
   # Variable Importance Plot
   var_imp_plot <- reactive({
-    plot_var_imp(var_imp(), mod_inputs()$algo, mod_inputs()$region, 10)
+    plot_var_imp(
+      var_imp(), 
+      shap_var_imp(), 
+      mod_inputs()$algo, 
+      mod_inputs()$region, 
+      20
+    )
   })
   
-  # Store SHAP plot
+  # SHAP summary plot
   shap_summary_plot <- reactive({
-    get_shap_summary(var_imp(), shap(), training_features(), 10) %>%
+    get_shap_summary(var_imp(), shap(), training_features(), 20) %>%
       plot_shap_summary(mod_inputs()$algo, mod_inputs()$region)
+  })
+  
+  # SHAP contribution plots
+  shap_contrib_good <- reactive({
+    plot_shap_contributions(shap(), mod_inputs()$algo, max_pred_good_row(), 20)
+  })
+  
+  shap_contrib_bad <- reactive({
+    plot_shap_contributions(shap(), mod_inputs()$algo, max_pred_bad_row(), 20)
+  })
+  
+  # LIME summary plot
+  # lime_summary_plot <- reactive({lime::plot_explanations(lime_expl())})
+  
+  # LIME contribution plots
+  # lime_contrib_good <- reactive({
+  #   lime::plot_features(lime_expl(), cases = max_pred_good_row())
+  # })
+  
+  # lime_contrib_bad <- reactive({
+  #   lime::plot_features(lime_expl(), cases = max_pred_bad_row())
+  # })
+  
+  # Partial dependence plot
+  pdp_plots <- reactive({
+    # First, get the numeric variable with the highest permutative variable
+    # importance
+    pdp_var <- mod_inputs()$df %>%
+      select(where(is.numeric)) %>%
+      colnames() %>%
+      enframe("var_num", "Variable") %>%
+      left_join(var_imp(), by = "Variable") %>%
+      slice_max(abs(Importance), n = 1, with_ties = FALSE) %>%
+      pull(Variable)
+    
+    print(pdp_var)
+    
+    plot_pdp(final_wflow(), !! rlang::sym(pdp_var), mod_inputs()$algo)
   })
   
   
@@ -361,9 +478,11 @@ server <- function(input, output) {
   output$skim_num <- renderTable(skim_num())
   
   # Model Tuning tab
+  output$tuning_notes <- renderPrint(tune_notes())
+  
   output$lr_tuning_text <- renderText({
     if (mod_inputs()$algo %in% "Logistic Regression") {
-      "Logistic Regression does not get tuned."
+      "Logistic Regression does not get tuned, but resampling is still done."
     }
   })
   
@@ -374,15 +493,28 @@ server <- function(input, output) {
   })
   
   # Model Evaluation tab
-  output$mod_metrics_table <- renderTable(model_metrics_table())
-  
+  output$mod_metrics_table <- renderTable(
+    model_metrics_table() %>%
+      pivot_longer(everything(), names_to = "Metric", values_to = "Value")
+  )
   output$roc_plot <- renderPlot(roc_plot())
   
   # SHAP tab
   output$shap_summary_plot <- renderPlot(shap_summary_plot())
+  output$shap_contrib_good <- renderPlot(shap_contrib_good())
+  output$shap_contrib_bad <- renderPlot(shap_contrib_bad())
   
-  # Partial Dependence Plot & Variable Importance tab
+  # LIME tab
+  # output$lime_str <- renderPrint(str(lime_expl()))
+  # output$lime_summary_plot <- renderPlot(lime_summary_plot())
+  # output$lime_contrib_good <- renderPlot(lime_contrib_good())
+  # output$lime_contrib_bad <- renderPlot(lime_contrib_bad())
+  
+  # Variable Importance tab
   output$var_imp_plot <- renderPlot(var_imp_plot())
+  
+  # Partial Dependence tab
+  output$pdp_plot <- renderPlot(pdp_plots())
 } # end 'server' function
 
 

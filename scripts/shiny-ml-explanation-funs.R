@@ -27,7 +27,18 @@ gen_wflow <- function(algo_name, train_data, dep_var) {
   mod_rec <- recipe(train_data) %>%
     update_role(!!dep_var, new_role = "outcome") %>%
     update_role(-all_outcomes(), new_role = "predictor") %>%
-    step_nzv(all_predictors(freq_cut = )) %>%
+    step_nzv(all_predictors(), freq_cut = 75/5, 5) %>%
+    recipeselectors::step_select_xtab(
+      all_nominal_predictors(),
+      outcome = quo_name(dep_var),
+      threshold = 0.1,
+      fdr = TRUE
+    ) %>%
+    recipeselectors::step_select_roc(
+      all_numeric_predictors(),
+      outcome = quo_name(dep_var),
+      threshold = 0.6
+    ) %>%
     step_YeoJohnson(all_numeric_predictors())
   
   if (algo_name %in% "Logistic Regression") {
@@ -35,9 +46,6 @@ gen_wflow <- function(algo_name, train_data, dep_var) {
   } else {
     mod_rec <- mod_rec %>% step_dummy(all_nominal_predictors(), one_hot = TRUE)
   }
-  
-  mod_rec <- mod_rec %>%
-    themis::step_smote(!!dep_var, over_ratio = tune(), skip = TRUE, seed = 732)
   
   mod_def <- switch(
     algo_name,
@@ -54,9 +62,8 @@ gen_wflow <- function(algo_name, train_data, dep_var) {
     "Multi-Layer Perceptron (NN)" = mlp(
       hidden_units = tune(),
       penalty = tune(),
-      dropout = tune(),
       epochs = tune()
-    )%>%
+    ) %>%
       set_engine("nnet"),
     "Logistic Regression" = logistic_reg() %>% set_engine("glm")
   )
@@ -84,7 +91,7 @@ tune_mod <- function(wf, algo_name, folds, params, seed) {
     )
   }
   
-  tune_bayes(
+  a <- tune_bayes(
     wf,
     resamples = folds,
     param_info = params,
@@ -97,16 +104,15 @@ tune_mod <- function(wf, algo_name, folds, params, seed) {
 
 # Calculate sensitivity/specificity associated with different probability
 # thresholds
-get_cutoff_threshold_data <- function(wflow_eval, tr, est) {
-  tr <- enquo(tr)
-  est <- enquo(est)
-  
-  preds <- wflow_eval %>% collect_predictions() %>% select(!!tr, !!est)
+get_cutoff_threshold_data <- function(wflow_eval, truth_col, pred_col) {
+  preds <- wflow_eval %>% 
+    collect_predictions() %>% 
+    select({{truth_col}}, {{pred_col}})
   
   threshold_data <- preds %>%
     probably::threshold_perf(
-      !!tr,
-      !!est,
+      {{truth_col}},
+      {{pred_col}},
       thresholds = seq(0, 1, by = 0.001)
     ) %>%
     pivot_wider(
@@ -123,29 +129,30 @@ get_cutoff_threshold_data <- function(wflow_eval, tr, est) {
 get_best_cutoff <- function(threshold_dat, err_pref) {
   if ((err_pref - 3) < 0) {
     # Cutoff to reduce FPR (high sensitivity)
-    threshold_dat %>% 
-      arrange(desc(sens)) %>%
-      slice(1:(which(.$j_index == max(j_index))[1] - 1)) %>%
-      mutate(rank_sens = ntile(sens, 2)) %>%
-      filter(rank_sens == abs(err_pref - 3)) %>%
-      slice_max(j_index, with_ties = FALSE) %>%
-      pull(.threshold)
+    rank_metric <- "sens"
   } else if ((err_pref - 3) > 0) {
     # Cutoff to reduce FNR (high specificity)
-    threshold_dat %>% 
-      arrange(desc(spec)) %>%
-      slice(1:(which(.$j_index == max(j_index))[1] - 1)) %>%
-      mutate(rank_spec = ntile(spec, 2)) %>%
-      filter(rank_spec == abs(err_pref - 3)) %>%
-      slice_max(j_index, with_ties = FALSE) %>%
-      pull(.threshold)
+    rank_metric <- "spec"
   } else {
-    # optimal cutoff
-    threshold_dat %>%
-      arrange(desc(.threshold)) %>%
-      slice_max(j_index, with_ties = FALSE) %>%
-      pull(.threshold)
+    # Optimal (balanced) cutoff
+    return(
+      threshold_dat %>%
+        filter(!.threshold %in% c(0, 1)) %>%
+        arrange(desc(.threshold)) %>%
+        slice_max(j_index, with_ties = FALSE) %>%
+        pull(.threshold)
+    )
   }
+  
+  threshold_dat %>% 
+    rename(metric = one_of(rank_metric)) %>%
+    arrange(desc(metric)) %>%
+    filter(!is.infinite(.threshold)) %>%
+    dplyr::slice(1:(which(.$j_index == max(j_index))[1] - 1)) %>%
+    mutate(rank_metric = ntile(metric, 2)) %>%
+    filter(rank_metric == abs(err_pref - 3)) %>%
+    slice_max(j_index, with_ties = FALSE) %>%
+    pull(.threshold)
 }
 
 
@@ -188,22 +195,20 @@ tidy_pred <- function(object, newdata) {
     pull(.pred_good)
 }
 
-
 # Get permutative variable importance given a finalized model workflow
 get_var_imp <- function(wflow, ref_class, pred_fun) {
-  mod <- extract_fit_parsnip(wflow)
-  train_dat <- extract_mold(wflow) %>% pluck("predictors")
-  target_dat <- extract_mold(wflow) %>% pluck("outcomes")
+  # mod <- extract_fit_parsnip(wflow)
+  # train_dat <- extract_mold(wflow) %>% pluck("predictors")
+  # target_dat <- extract_mold(wflow) %>% pluck("outcomes")
   
-  vi_df <- vip::vi_permute(
-    mod, 
-    train = train_dat, 
-    target = target_dat, 
+  vip::vi_permute(
+    extract_fit_parsnip(wflow), 
+    train = extract_mold(wflow) %>% pluck("predictors"), 
+    target = extract_mold(wflow) %>% pluck("outcomes"), 
     metric = "auc",
     pred_wrapper = pred_fun,
     reference_class = ref_class,
-    nsim = 10,
-    paralell = TRUE
+    nsim = 10
   )
 }
 
@@ -222,10 +227,10 @@ get_shap <- function(wflow, pred_fun) {
 
 # Get a SHAP summary dataframe that contains feature observations, predictions,
 # and permutative importance
-get_shap_summary <- function(vi, shap_df, feat_df, max_features = 10) {
+get_shap_summary <- function(vi, shap_df, feat_df, nfeatures = 10) {
   vi <- vi %>%
     set_names(colnames(.) %>% str_to_lower()) %>%
-    slice_max(importance, n = max_features, with_ties = FALSE)
+    slice_max(importance, n = nfeatures, with_ties = FALSE)
   
   shap_df <- shap_df %>%
     as_tibble() %>%
@@ -245,6 +250,35 @@ get_shap_summary <- function(vi, shap_df, feat_df, max_features = 10) {
       )
     ) %>%
     arrange(desc(importance))
+}
+
+# Calculate SHAP variable importance
+get_shap_imp <- function(shap_obj) {
+  shap_obj %>% 
+    summarise(across(everything(), ~ mean(abs(.x)))) %>%
+    pivot_longer(
+      everything(), 
+      names_to = "Variable", 
+      values_to = "Importance"
+    ) %>%
+    arrange(desc(Importance))
+}
+
+# Make a LIME explainer model
+get_lime <- function(train_data, test_data, model, nfeatures) {
+  lime_obj <- lime::lime(
+    train_data,
+    model,
+    bin_continuous = TRUE
+  )
+  
+  lime::explain(
+    test_data,
+    lime_obj,
+    n_labels = 1,
+    n_features = nfeatures,
+    n_permutations = 500
+  )
 }
 
 
@@ -376,17 +410,42 @@ plot_roc <- function(roc_df, auc) {
 }
 
 # Create a variable importance plot
-plot_var_imp <- function(vi_df, algo_name, region_name, max_features = 10) {
-  vi_plot_df <- vi_df %>% 
-    slice_max(Importance, n = max_features) %>%
-    arrange(desc(Importance))
+plot_var_imp <- function(
+  vi_df, shap_vi_df, algo_name, region_name, nfeatures = 10
+) {
+  perm_imp_df <- vi_df %>% 
+    select(Variable, Permutative = "Importance") %>%
+    arrange(desc(Permutative)) %>%
+    mutate(permutative_rank = row_number())
   
-  vi_plot_df %>% 
-    vip::vip() +
+  shap_imp_df <- shap_vi_df %>% 
+    select(Variable, SHAP = "Importance") %>%
+    arrange(desc(SHAP)) %>%
+    mutate(shap_rank = row_number())
+  
+  imp_plot_df <- perm_imp_df %>%
+    left_join(shap_imp_df, by = "Variable") %>%
+    mutate(importance_rank = sum(permutative_rank, shap_rank)) %>%
+    arrange(desc(importance_rank)) %>%
+    slice_max(importance_rank, n = nfeatures) %>%
+    select(-ends_with("_rank")) %>%
+    arrange(desc(Permutative)) %>%
+    mutate(Variable = as_factor(Variable)) %>%
+    pivot_longer(-Variable, names_to = "Method", values_to = "Importance") %>%
+    mutate(Method = as_factor(Method) %>% fct_relevel("SHAP"))
+  
+  imp_plot_df %>%
+    ggplot(aes(y = Importance, x = fct_rev(Variable), fill = Method)) +
+    geom_col(position = "dodge", width = 0.7) +
+    scale_fill_manual(values = c("blue", "red")) +
+    guides(fill = guide_legend(reverse=TRUE)) +
+    coord_flip() +
     ml_eval_theme() +
     labs(
       title = paste("Variable Importance:", algo_name),
-      subtitle = str_c("(", region_name, ")")
+      subtitle = str_c("(", region_name, ")"),
+      y = "Variable",
+      x = "Importance"
     )
 }
 
@@ -408,5 +467,56 @@ plot_shap_summary <- function(shap_summary_df, algo_name, region_name) {
       y = NULL,
       color = "Feature Value"
     ) + 
+    ml_eval_theme()
+}
+
+# Generate a dataframe of top 'nfeat' SHAP contributions for a given observation
+# and accompanying contribution plot
+plot_shap_contributions <- function(shap_df, algorithm, rnum, nfeat) {
+  n_feat <- min(c(nfeat, ncol(shap_df)))
+  
+  autoplot(
+    shap_df,
+    type = "contribution", 
+    row_num = rnum , 
+    num_features = n_feat
+  ) + 
+    labs(
+      title = str_glue("Top {nfeat} SHAP Contributors for Observation {rnum}"),
+      subtitle = str_glue("({algorithm})")
+    ) +
+    ml_eval_theme()
+}
+
+# Generate a partial dependence plot
+plot_pdp <- function(wflow, pred_var, algorithm) {
+  pred_var <- enquo(pred_var)
+  
+  pdp::partial(
+    extract_fit_parsnip(wflow),
+    pred.var = quo_name(pred_var),
+    train = extract_mold(wflow) %>% pluck("predictors"),
+    pred.fun = tidy_pred,
+    type = "classification"
+  ) %>%
+    data.frame() %>%
+    group_by(yhat.id) %>%
+    mutate(rnum = row_number()) %>%
+    group_by(rnum) %>%
+    summarise(
+      {{pred_var}} := mean({{pred_var}}, na.rm = TRUE),
+      yhat = mean(yhat, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    select(-rnum) %>%
+    ggplot(aes(!!pred_var, yhat)) +
+    geom_smooth(formula = y ~ x, method = "loess") +
+    labs(
+      title = str_glue(
+        "Partial Dependence of 'Class' == 'good' on '{quo_name(pred_var)}'"
+      ),
+      subtitle = str_glue("({algorithm})"),
+      y = str_glue("Predicted probability of 'good' loan")
+    ) +
     ml_eval_theme()
 }
